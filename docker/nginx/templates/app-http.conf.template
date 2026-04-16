@@ -1,0 +1,45 @@
+server {
+    listen 80;
+    server_name ${SERVER_NAME};
+
+    root /var/www/html/public;
+    index index.php index.html;
+
+    client_max_body_size 32m;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location /storage/ {
+        alias /var/www/html/storage/app/public/;
+        try_files $uri =404;
+        access_log off;
+        expires 7d;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass app:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME /var/www/html/public$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT /var/www/html/public;
+        fastcgi_read_timeout 300;
+    }
+
+    location ~* \.(?:css|gif|ico|jpeg|jpg|js|png|svg|webp|woff|woff2)$ {
+        try_files $uri =404;
+        access_log off;
+        expires 7d;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+}

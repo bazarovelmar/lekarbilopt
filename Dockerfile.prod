@@ -1,0 +1,88 @@
+FROM composer:2 AS composer_deps
+
+WORKDIR /app
+
+COPY composer.json composer.lock ./
+RUN composer install \
+    --no-dev \
+    --prefer-dist \
+    --no-interaction \
+    --no-progress \
+    --optimize-autoloader \
+    --no-scripts
+
+COPY . .
+RUN composer dump-autoload --optimize --no-dev
+
+
+FROM node:22-bookworm-slim AS frontend_builder
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install
+
+COPY resources ./resources
+COPY public ./public
+COPY vite.config.js ./
+RUN npm run build
+
+
+FROM php:8.3-fpm-bookworm AS app_runtime
+
+ENV APP_HOME=/var/www/html \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PHP_OPCACHE_VALIDATE_TIMESTAMPS=0
+
+WORKDIR ${APP_HOME}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        libjpeg62-turbo-dev \
+        libpng-dev \
+        libpq-dev \
+        unzip \
+    && docker-php-ext-configure gd --with-jpeg \
+    && docker-php-ext-install \
+        gd \
+        opcache \
+        pcntl \
+        pdo_pgsql \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g playwright \
+    && npx playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+COPY --from=composer_deps /app/vendor ./vendor
+COPY --from=frontend_builder /app/public/build ./public/build
+COPY docker/php/entrypoint.prod.sh /usr/local/bin/docker-entrypoint-prod
+COPY docker/php/conf.d/production.ini /usr/local/etc/php/conf.d/99-production.ini
+
+RUN chmod +x /usr/local/bin/docker-entrypoint-prod \
+    && mkdir -p storage/app/public storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
+    && chown -R www-data:www-data storage bootstrap/cache
+
+ENTRYPOINT ["docker-entrypoint-prod"]
+CMD ["php-fpm"]
+
+
+FROM nginx:1.27-alpine AS nginx_runtime
+
+WORKDIR /var/www/html
+
+COPY public ./public
+COPY --from=frontend_builder /app/public/build ./public/build
+COPY docker/nginx/entrypoint.prod.sh /docker-entrypoint-prod.sh
+COPY docker/nginx/templates/app-http.conf.template /etc/nginx/templates/app-http.conf.template
+COPY docker/nginx/templates/app-https.conf.template /etc/nginx/templates/app-https.conf.template
+
+RUN chmod +x /docker-entrypoint-prod.sh \
+    && mkdir -p /var/www/html/storage/app/public /var/www/certbot
+
+ENTRYPOINT ["/docker-entrypoint-prod.sh"]
+CMD ["nginx", "-g", "daemon off;"]

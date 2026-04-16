@@ -1,0 +1,92 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      target: app_runtime
+    env_file:
+      - .env.prod
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - app_storage:/var/www/html/storage
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      target: app_runtime
+    env_file:
+      - .env.prod
+    command: php artisan queue:work --sleep=1 --tries=2 --timeout=180
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - app_storage:/var/www/html/storage
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      target: nginx_runtime
+    env_file:
+      - .env.prod
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - app_storage:/var/www/html/storage:ro
+      - certbot_www:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
+
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - .env.prod
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  certbot:
+    image: certbot/certbot:latest
+    profiles:
+      - ops
+    volumes:
+      - certbot_www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+
+volumes:
+  app_storage:
+  postgres_data:
+  redis_data:
+  certbot_www:
+  letsencrypt:
