@@ -115,20 +115,42 @@ class TelegramBotService
         return Storage::disk('local')->path($filename);
     }
 
-    public function sendPhotoToChannel(string $imagePath, string $caption): int
+    public function sendPhotoToChannel(string $imagePath, string $caption, array $inlineButtons = []): int
     {
         $channelId = config('services.telegram.channel_id');
         if (! $channelId) {
             throw new RuntimeException('Telegram channel id is missing.');
         }
 
-        $message = Telegram::sendPhoto([
+        $payload = [
             'chat_id' => $channelId,
             'photo' => InputFile::create($imagePath),
             'caption' => $caption,
-        ]);
+        ];
+
+        if (!empty($inlineButtons)) {
+            $payload['reply_markup'] = json_encode([
+                'inline_keyboard' => $inlineButtons,
+            ], JSON_UNESCAPED_UNICODE);
+        }
+
+        $message = Telegram::sendPhoto($payload);
 
         return (int) $message->messageId;
+    }
+
+    public function getChatUsername(int|string $chatId): ?string
+    {
+        try {
+            $chat = $this->withRetry(function () use ($chatId) {
+                return Telegram::getChat(['chat_id' => $chatId]);
+            });
+
+            $username = $chat->username ?? null;
+            return is_string($username) && $username !== '' ? $username : null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     protected function botToken(): string

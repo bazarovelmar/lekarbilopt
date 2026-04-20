@@ -1,4 +1,26 @@
-FROM composer:2 AS composer_deps
+FROM php:8.3-fpm-bookworm AS php_base
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        libjpeg62-turbo-dev \
+        libpng-dev \
+        libpq-dev \
+        unzip \
+    && docker-php-ext-configure gd --with-jpeg \
+    && docker-php-ext-install \
+        gd \
+        opcache \
+        pcntl \
+        pdo_pgsql \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+
+FROM php_base AS composer_deps
 
 WORKDIR /app
 
@@ -28,7 +50,7 @@ COPY vite.config.js ./
 RUN npm run build
 
 
-FROM php:8.3-fpm-bookworm AS app_runtime
+FROM php_base AS app_runtime
 
 ENV APP_HOME=/var/www/html \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -37,20 +59,6 @@ ENV APP_HOME=/var/www/html \
 WORKDIR ${APP_HOME}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        gnupg \
-        libjpeg62-turbo-dev \
-        libpng-dev \
-        libpq-dev \
-        unzip \
-    && docker-php-ext-configure gd --with-jpeg \
-    && docker-php-ext-install \
-        gd \
-        opcache \
-        pcntl \
-        pdo_pgsql \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g playwright \

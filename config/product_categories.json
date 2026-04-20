@@ -1,0 +1,136 @@
+{
+  "categories": [
+    {
+      "id": 1,
+      "name": "Электроника и техника",
+      "slug": "electronics",
+      "children": [
+        { "name": "Телефоны и связь", "slug": "phones" },
+        { "name": "Аудио (наушники, колонки)", "slug": "audio" },
+        { "name": "Зарядные устройства", "slug": "chargers" },
+        { "name": "Бытовая техника", "slug": "home_appliances" },
+        { "name": "Гаджеты и аксессуары", "slug": "gadgets" }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Одежда и обувь",
+      "slug": "clothing",
+      "children": [
+        { "name": "Мужская одежда", "slug": "men" },
+        { "name": "Женская одежда", "slug": "women" },
+        { "name": "Детская одежда", "slug": "kids" },
+        { "name": "Обувь", "slug": "shoes" },
+        { "name": "Верхняя одежда", "slug": "outerwear" }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Аксессуары и украшения",
+      "slug": "accessories",
+      "children": [
+        { "name": "Бижутерия", "slug": "jewelry" },
+        { "name": "Часы", "slug": "watches" },
+        { "name": "Сумки", "slug": "bags" },
+        { "name": "Ремни", "slug": "belts" },
+        { "name": "Очки", "slug": "glasses" }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Товары для дома",
+      "slug": "home",
+      "children": [
+        { "name": "Кухня", "slug": "kitchen" },
+        { "name": "Уборка", "slug": "cleaning" },
+        { "name": "Хранение", "slug": "storage" }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Текстиль",
+      "slug": "textile",
+      "children": [
+        { "name": "Постельное белье", "slug": "bedding" },
+        { "name": "Полотенца", "slug": "towels" },
+        { "name": "Шторы и пледы", "slug": "curtains_blankets" }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Красота и здоровье",
+      "slug": "beauty",
+      "children": [
+        { "name": "Косметика", "slug": "cosmetics" },
+        { "name": "Уход за телом и волосами", "slug": "care" },
+        { "name": "Массажеры и медтовары", "slug": "health_devices" }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Детские товары",
+      "slug": "kids_products",
+      "children": [
+        { "name": "Игрушки", "slug": "toys" },
+        { "name": "Одежда для детей", "slug": "kids_clothing" },
+        { "name": "Для новорожденных", "slug": "newborn" }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Спорт и отдых",
+      "slug": "sport",
+      "children": [
+        { "name": "Фитнес", "slug": "fitness" },
+        { "name": "Туризм", "slug": "tourism" },
+        { "name": "Велотовары", "slug": "cycling" }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "Автотовары",
+      "slug": "auto",
+      "children": [
+        { "name": "Аксессуары для авто", "slug": "auto_accessories" },
+        { "name": "Инструменты", "slug": "auto_tools" },
+        { "name": "Уход за авто", "slug": "car_care" }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "Строительство и ремонт",
+      "slug": "construction",
+      "children": [
+        { "name": "Инструменты", "slug": "tools" },
+        { "name": "Крепеж", "slug": "fasteners" },
+        { "name": "Электрика", "slug": "electrics" }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "Канцтовары и офис",
+      "slug": "office",
+      "children": [
+        { "name": "Ручки и блокноты", "slug": "stationery" },
+        { "name": "Учебные товары", "slug": "school" },
+        { "name": "Офисные мелочи", "slug": "office_misc" }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "Товары для животных",
+      "slug": "pets",
+      "children": [
+        { "name": "Корм", "slug": "pet_food" },
+        { "name": "Аксессуары", "slug": "pet_accessories" },
+        { "name": "Игрушки", "slug": "pet_toys" }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "Прочее",
+      "slug": "other",
+      "children": []
+    }
+  ]
+}

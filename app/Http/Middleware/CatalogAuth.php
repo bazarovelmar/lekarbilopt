@@ -1,0 +1,20 @@
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class CatalogAuth
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        if ($request->session()->get('catalog_auth') === true) {
+            return $next($request);
+        }
+
+        return redirect()->route('catalog.login')
+            ->with('intended', $request->fullUrl());
+    }
+}

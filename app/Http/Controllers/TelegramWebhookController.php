@@ -11,6 +11,7 @@ use App\Jobs\ProcessAidentikaGeneration;
 use App\Services\AidentikaService;
 use App\Services\InfographicService;
 use App\Services\TelegramBotService;
+use App\Services\WbCardService;
 use App\Services\WbImageSearchService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -24,7 +25,8 @@ class TelegramWebhookController extends Controller
         TelegramBotService $telegram,
         WbImageSearchService $wbSearch,
         InfographicService $infographic,
-        AidentikaService $aidentika
+        AidentikaService $aidentika,
+        WbCardService $wbCards
     ): JsonResponse {
         if (! config('bot.wb.enabled')) {
             return response()->json(['ok' => true]);
@@ -104,6 +106,50 @@ class TelegramWebhookController extends Controller
             return response()->json(['ok' => true]);
         }
 
+        if ($this->isAwaitingCustomLink($session) && is_string($text) && $text !== '') {
+            $nmId = $this->extractWbIdFromUrl($text);
+            if ($nmId === null) {
+                $this->replaceServiceMessage(
+                    $telegram, $session, $chatId,
+                    'Не удалось распознать ссылку WB. Пришлите ссылку вида https://www.wildberries.ru/catalog/123456789/detail.aspx'
+                );
+                if (is_int($updateId)) {
+                    $this->setLastUpdateId($session, $updateId);
+                }
+                return response()->json(['ok' => true]);
+            }
+
+            $card = $wbCards->fetchCard($nmId);
+            $rawProduct = $card['data']['products'][0] ?? null;
+            if (!is_array($rawProduct)) {
+                $this->replaceServiceMessage(
+                    $telegram, $session, $chatId,
+                    'Не получилось загрузить данные товара по этой ссылке. Попробуйте ещё раз.'
+                );
+                if (is_int($updateId)) {
+                    $this->setLastUpdateId($session, $updateId);
+                }
+                return response()->json(['ok' => true]);
+            }
+
+            $selected = $this->buildCandidateFromRaw($rawProduct, $nmId);
+            $this->storeSelectedProduct($selected, $session);
+            $this->setSelectedWbItem($session, $selected);
+            $this->storeLastQuery($session, (string) ($selected['title'] ?? ''));
+            $session->state = 'await_price';
+            $session->save();
+
+            $this->replaceServiceMessage(
+                $telegram, $session, $chatId,
+                "Товар принят: {$selected['title']}\nВведите вашу цену (только число)."
+            );
+
+            if (is_int($updateId)) {
+                $this->setLastUpdateId($session, $updateId);
+            }
+            return response()->json(['ok' => true]);
+        }
+
         if ($this->isAwaitingPrice($session) && is_string($text) && $text !== '') {
             $price = $this->parsePrice($text);
             $selected = $this->getSelectedWbItem($session);
@@ -144,6 +190,10 @@ class TelegramWebhookController extends Controller
                 $actionId = $aidentikaResp['action_id'] ?? null;
                 $description = $this->buildInfographicCaption($selected, $price);
 
+                $authorUsername = is_string($message->from?->username ?? null) && $message->from->username !== ''
+                    ? (string) $message->from->username
+                    : null;
+
                 GeneratedPost::create([
                     'chat_id' => $chatId,
                     'telegram_user_id' => $telegramUserId,
@@ -157,6 +207,7 @@ class TelegramWebhookController extends Controller
                         'user_price' => $price,
                         'aidentika_action_id' => $actionId,
                         'aidentika_status' => $aidentikaResp['status'] ?? null,
+                        'author_username' => $authorUsername,
                     ],
                 ]);
 
@@ -386,6 +437,17 @@ class TelegramWebhookController extends Controller
         TelegramBotService $telegram,
         int $chatId
     ): bool {
+        if ($data === 'wb_custom') {
+            $session->state = 'await_custom_link';
+            $session->save();
+            $telegram->answerCallbackQuery($callbackId ?? '');
+            $telegram->sendMessage(
+                $chatId,
+                'Отправьте ссылку на товар WB (например: https://www.wildberries.ru/catalog/123456789/detail.aspx)'
+            );
+            return true;
+        }
+
         if (!str_starts_with($data, 'wb_select:')) {
             return false;
         }
@@ -422,6 +484,11 @@ class TelegramWebhookController extends Controller
                 'callback_data' => 'wb_select:'.$idx,
             ]];
         }
+
+        $buttons[] = [[
+            'text' => 'Ни один не подходит — предложить свою ссылку',
+            'callback_data' => 'wb_custom',
+        ]];
 
         return $buttons;
     }
@@ -464,9 +531,20 @@ class TelegramWebhookController extends Controller
         $subjectId = isset($raw['subjectId']) ? (int) $raw['subjectId'] : null;
         $subjectParentId = isset($raw['subjectParentId']) ? (int) $raw['subjectParentId'] : null;
         $entity = isset($raw['entity']) ? (string) $raw['entity'] : null;
+        $aiCategory = is_array($item['ai_category'] ?? null) ? $item['ai_category'] : null;
+        $aiSubcategory = is_array($item['ai_subcategory'] ?? null) ? $item['ai_subcategory'] : null;
 
         $parentCategory = null;
-        if ($subjectParentId) {
+        if (is_array($aiCategory) && !empty($aiCategory['id'])) {
+            $parentCategory = WbCategory::updateOrCreate(
+                ['wb_subject_id' => (int) $aiCategory['id']],
+                [
+                    'parent_wb_subject_id' => null,
+                    'name' => isset($aiCategory['name']) ? (string) $aiCategory['name'] : null,
+                    'entity' => isset($aiCategory['slug']) ? (string) $aiCategory['slug'] : null,
+                ]
+            );
+        } elseif ($subjectParentId) {
             $parentCategory = WbCategory::updateOrCreate(
                 ['wb_subject_id' => $subjectParentId],
                 [
@@ -478,7 +556,16 @@ class TelegramWebhookController extends Controller
         }
 
         $childCategory = null;
-        if ($subjectId) {
+        if (is_array($aiSubcategory) && !empty($aiSubcategory['id']) && $parentCategory) {
+            $childCategory = WbCategory::updateOrCreate(
+                ['wb_subject_id' => (int) $aiSubcategory['id']],
+                [
+                    'parent_wb_subject_id' => (int) ($aiCategory['id'] ?? 0),
+                    'name' => isset($aiSubcategory['name']) ? (string) $aiSubcategory['name'] : null,
+                    'entity' => isset($aiSubcategory['slug']) ? (string) $aiSubcategory['slug'] : null,
+                ]
+            );
+        } elseif ($subjectId) {
             $childCategory = WbCategory::updateOrCreate(
                 ['wb_subject_id' => $subjectId],
                 [
@@ -555,6 +642,55 @@ class TelegramWebhookController extends Controller
     protected function isAwaitingPrice(DialogSession $session): bool
     {
         return is_string($session->state) && $session->state === 'await_price';
+    }
+
+    protected function isAwaitingCustomLink(DialogSession $session): bool
+    {
+        return is_string($session->state) && $session->state === 'await_custom_link';
+    }
+
+    protected function extractWbIdFromUrl(string $input): ?int
+    {
+        $input = trim($input);
+        if ($input === '') {
+            return null;
+        }
+
+        if (ctype_digit($input)) {
+            $id = (int) $input;
+            return $id > 0 ? $id : null;
+        }
+
+        if (preg_match('#/catalog/(\d+)#u', $input, $m)) {
+            return (int) $m[1];
+        }
+
+        if (preg_match('#(?:^|[?&])(?:nm|nmId)=(\d+)#u', $input, $m)) {
+            return (int) $m[1];
+        }
+
+        return null;
+    }
+
+    protected function buildCandidateFromRaw(array $raw, int $nmId): array
+    {
+        $title = (string) ($raw['name'] ?? $raw['title'] ?? 'Товар '.$nmId);
+
+        $priceU = $raw['salePriceU'] ?? $raw['priceU'] ?? ($raw['sizes'][0]['price']['product'] ?? null);
+        $price = null;
+        if (is_numeric($priceU)) {
+            $price = number_format(((float) $priceU) / 100, 0, ',', ' ');
+        }
+
+        return [
+            'id' => $nmId,
+            'title' => $title,
+            'price' => $price,
+            'url' => 'https://www.wildberries.ru/catalog/'.$nmId.'/detail.aspx',
+            'brand' => $raw['brand'] ?? null,
+            'subject' => $raw['subjectId'] ?? null,
+            'raw' => $raw,
+        ];
     }
 
     protected function parsePrice(string $raw): ?float

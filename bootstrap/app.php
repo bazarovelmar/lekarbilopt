@@ -14,6 +14,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'telegram/webhook',
             'aidentika/webhook',
+            'aidentika-webhook',
+        ]);
+
+        $middleware->alias([
+            'catalog.auth' => \App\Http\Middleware\CatalogAuth::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

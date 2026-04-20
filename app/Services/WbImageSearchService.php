@@ -11,7 +11,8 @@ class WbImageSearchService
 
     public function __construct(
         protected WbSearchService $wbSearch,
-        protected WbImageRankService $rankService
+        protected WbImageRankService $rankService,
+        protected ProductCategoryService $productCategories
     ) {}
 
     public function findLinks(string $imagePath, int $limit = 3, ?callable $progress = null): array
@@ -34,10 +35,10 @@ class WbImageSearchService
 
         $ranked = $this->rankService->rankByText($analysis, $candidates, $limit);
         if (!empty($ranked)) {
-            return $ranked;
+            return $this->productCategories->applyToItems($ranked, $analysis);
         }
 
-        return array_slice($candidates, 0, $limit);
+        return $this->productCategories->applyToItems(array_slice($candidates, 0, $limit), $analysis);
     }
 
     public function getLastQuery(): ?string
@@ -48,6 +49,7 @@ class WbImageSearchService
     protected function analyzeImage(string $imagePath): array
     {
         $prompt = (string) config('bot.wb_minimal_prompt');
+        $categoryPrompt = $this->productCategories->buildSelectionPrompt();
         $dataUrl = $this->imageToDataUrl($imagePath);
 
         $payload = $this->buildResponsePayload([
@@ -61,11 +63,20 @@ class WbImageSearchService
                     'schema' => [
                         'type' => 'object',
                         'properties' => [
+                            'product_type' => [
+                                'type' => 'string',
+                            ],
                             'search_query' => [
                                 'type' => 'string',
                             ],
+                            'category_slug' => [
+                                'type' => 'string',
+                            ],
+                            'subcategory_slug' => [
+                                'type' => 'string',
+                            ],
                         ],
-                        'required' => ['search_query'],
+                        'required' => ['product_type', 'search_query', 'category_slug', 'subcategory_slug'],
                         'additionalProperties' => false,
                     ],
                 ],
@@ -73,7 +84,7 @@ class WbImageSearchService
             'input' => [[
                 'role' => 'user',
                 'content' => [
-                    ['type' => 'input_text', 'text' => 'Return JSON only with key search_query.'],
+                    ['type' => 'input_text', 'text' => $prompt."\n\nВыбери category_slug и subcategory_slug строго из списка ниже.\nЕсли не подходит ничего, ставь category_slug=\"other\", subcategory_slug=\"\".\n\n".$categoryPrompt."\n\nВерни только JSON: product_type, search_query, category_slug, subcategory_slug."],
                     ['type' => 'input_image', 'image_url' => $dataUrl, 'detail' => 'high'],
                 ],
             ]],
@@ -114,6 +125,8 @@ class WbImageSearchService
             ]);
             return [];
         }
+
+        $data = $this->productCategories->normalizeSelection($data);
 
         logger()->info('WB minimal analysis parsed', [
             'parsed' => $data,
@@ -330,7 +343,7 @@ PROMPT;
 
     protected function extractProductType(array $analysis, string $rawQuery, string $query): string
     {
-        $category = mb_strtolower(trim((string) ($analysis['category'] ?? '')));
+        $category = mb_strtolower(trim((string) ($analysis['product_type'] ?? '')));
         $hay = mb_strtolower($rawQuery.' '.$query.' '.$category);
         if (preg_match('/\\b(гарнитура|headset)\\b/u', $hay)) {
             return 'гарнитура';

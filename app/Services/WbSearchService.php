@@ -24,6 +24,10 @@ class WbSearchService
         $cacheKey = 'wb_search:' . md5($query);
         $cached = Cache::get($cacheKey);
         if (is_array($cached)) {
+            logger()->info('WB search cache hit', [
+                'query' => $query,
+                'count' => count($cached),
+            ]);
             return $cached;
         }
 
@@ -88,46 +92,7 @@ class WbSearchService
             $remoteTimeoutMs = max(1000, $remoteTimeoutMs);
             $remoteBusyTtl = (int) config('bot.wb.playwright_remote_busy_ttl', 45);
             $remoteCooldown = (int) config('bot.wb.playwright_remote_cooldown_sec', 2);
-            if (!empty($proxies)) {
-                foreach ($proxies as $proxy) {
-                    $attemptedProxy = true;
-                    logger()->info('WB playwright proxy attempt', [
-                        'query' => $query,
-                        'proxy' => $proxy,
-                        'url' => $url,
-                    ]);
-                    $result = $this->playwright->fetchJson($url, $headers['User-Agent'], $headers, $proxy, $timeoutMs);
-                    if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
-                        $payload = $result['payload'];
-                        break;
-                    }
-                    logger()->warning('WB proxy response not ok, trying next', [
-                        'query' => $query,
-                        'proxy' => $proxy,
-                        'status' => $result['status'] ?? null,
-                        'error' => $result['error'] ?? null,
-                    ]);
-                }
-            }
-
-            if (!$payload) {
-                if (!$attemptedProxy || $useFallback) {
-                    logger()->info('WB playwright direct attempt', [
-                        'query' => $query,
-                        'url' => $url,
-                    ]);
-                    $result = $this->playwright->fetchJson($url, $headers['User-Agent'], $headers, null, $timeoutMs);
-                    if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
-                        $payload = $result['payload'];
-                    } else {
-                        logger()->warning('WB direct response not ok', [
-                            'query' => $query,
-                            'status' => $result['status'] ?? null,
-                            'error' => $result['error'] ?? null,
-                        ]);
-                    }
-                }
-            }
+            $remoteProxyPool = $this->parseConfiguredProxyPool(config('bot.wb.proxy_test_pool', []));
 
             if (!$payload && !empty($remoteNodes)) {
                 $tried = 0;
@@ -149,47 +114,151 @@ class WbSearchService
                         $this->nodeMonitor->log($node, 'busy', $query);
                         continue;
                     }
-                    logger()->info('WB playwright remote attempt', [
+
+                    $nodeAttempts = $remoteProxyPool;
+                    $nodeAttempts[] = [
+                        'id' => 'no-proxy',
+                        'url' => null,
+                    ];
+
+                    $this->nodeMonitor->log($node, 'attempt', $query);
+                    logger()->info('WB playwright remote node attempts started', [
                         'query' => $query,
                         'node' => $node,
+                        'proxy_ids' => array_map(fn (array $item) => $item['id'] ?? 'no-proxy', $nodeAttempts),
+                        'attempts_total' => count($nodeAttempts),
                         'url' => $url,
                     ]);
-                    $this->nodeMonitor->log($node, 'attempt', $query);
-                    $result = $this->remotePlaywright->fetchJson(
-                        $node,
-                        $url,
-                        $headers['User-Agent'],
-                        $headers,
-                        $remoteTimeoutMs
-                    );
-                    if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
-                        $payload = $result['payload'];
-                        \Illuminate\Support\Facades\Cache::forget($lockKey);
-                        $this->nodeMonitor->log($node, 'ok', $query, [
+                    $nodeAttemptResults = [];
+                    foreach ($nodeAttempts as $attemptIndex => $remoteProxy) {
+                        $proxyId = $remoteProxy['id'] ?? 'no-proxy';
+                        $proxyUrl = $remoteProxy['url'] ?? null;
+
+                        $result = $this->remotePlaywright->fetchJson(
+                            $node,
+                            $url,
+                            $headers['User-Agent'],
+                            $headers,
+                            $remoteTimeoutMs,
+                            $proxyUrl
+                        );
+
+                        $nodeAttemptResults[] = [
+                            'proxy_id' => $proxyId,
+                            'without_proxy' => $proxyUrl === null,
                             'status' => $result['status'] ?? null,
-                        ]);
-                        break;
+                            'error' => $result['error'] ?? null,
+                        ];
+
+                        if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
+                            $payload = $result['payload'];
+                            \Illuminate\Support\Facades\Cache::forget($lockKey);
+                            $this->nodeMonitor->log($node, 'ok', $query, [
+                                'status' => $result['status'] ?? null,
+                                'proxy_id' => $proxyId,
+                            ]);
+                            logger()->info('WB playwright remote response ok', [
+                                'query' => $query,
+                                'node' => $node,
+                                'playwright_node' => $node,
+                                'proxy_id' => $proxyId,
+                                'proxy' => is_string($proxyUrl) ? $this->maskProxyUrl($proxyUrl) : null,
+                                'without_proxy' => $proxyUrl === null,
+                                'status' => $result['status'] ?? null,
+                                'products_count' => $this->countPayloadProducts($result['payload']),
+                                'attempt' => $attemptIndex + 1,
+                                'attempts_total' => count($nodeAttempts),
+                            ]);
+                            break 2;
+                        }
+
+                        if ($remoteCooldown > 0) {
+                            sleep($remoteCooldown);
+                        }
                     }
-                    logger()->warning('WB playwright remote response not ok', [
+
+                    \Illuminate\Support\Facades\Cache::forget($lockKey);
+                    logger()->warning('WB playwright remote node attempts failed', [
                         'query' => $query,
                         'node' => $node,
-                        'status' => $result['status'] ?? null,
-                        'error' => $result['error'] ?? null,
+                        'attempts_total' => count($nodeAttempts),
+                        'results' => $nodeAttemptResults,
                     ]);
-                    \Illuminate\Support\Facades\Cache::forget($lockKey);
                     $this->nodeMonitor->log($node, 'error', $query, [
-                        'status' => $result['status'] ?? null,
-                        'error' => $result['error'] ?? null,
+                        'error' => 'all proxy attempts failed',
+                        'proxy_attempts' => count($nodeAttempts),
                     ]);
-                    if ($remoteCooldown > 0) {
-                        sleep($remoteCooldown);
-                    }
                 }
                 if (!$payload && $tried > 0 && $busyCount === $tried) {
                     logger()->warning('WB playwright remote all busy', [
                         'query' => $query,
                         'nodes' => $remoteNodes,
                     ]);
+                }
+            }
+
+            if (!$payload && !empty($proxies)) {
+                foreach ($proxies as $proxy) {
+                    $attemptedProxy = true;
+                    logger()->info('WB playwright proxy attempt', [
+                        'query' => $query,
+                        'playwright_node' => 'local',
+                        'proxy' => $this->maskProxyUrl($proxy),
+                        'url' => $url,
+                    ]);
+                    $result = $this->playwright->fetchJson($url, $headers['User-Agent'], $headers, $proxy, $timeoutMs);
+                    if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
+                        $payload = $result['payload'];
+                        logger()->info('WB playwright local proxy response ok', [
+                            'query' => $query,
+                            'playwright_node' => 'local',
+                            'proxy_id' => 'local-proxy',
+                            'proxy' => $this->maskProxyUrl($proxy),
+                            'without_proxy' => false,
+                            'status' => $result['status'] ?? null,
+                            'products_count' => $this->countPayloadProducts($result['payload']),
+                        ]);
+                        break;
+                    }
+                    logger()->warning('WB proxy response not ok, trying next', [
+                        'query' => $query,
+                        'playwright_node' => 'local',
+                        'proxy' => $this->maskProxyUrl($proxy),
+                        'status' => $result['status'] ?? null,
+                        'error' => $result['error'] ?? null,
+                    ]);
+                }
+            }
+
+            if (!$payload) {
+                if (!$attemptedProxy || $useFallback) {
+                    logger()->info('WB playwright direct attempt', [
+                        'query' => $query,
+                        'playwright_node' => 'local',
+                        'proxy_id' => 'no-proxy',
+                        'url' => $url,
+                    ]);
+                    $result = $this->playwright->fetchJson($url, $headers['User-Agent'], $headers, null, $timeoutMs);
+                    if (($result['ok'] ?? false) === true && is_array($result['payload'] ?? null)) {
+                        $payload = $result['payload'];
+                        logger()->info('WB playwright direct response ok', [
+                            'query' => $query,
+                            'playwright_node' => 'local',
+                            'proxy_id' => 'no-proxy',
+                            'proxy' => null,
+                            'without_proxy' => true,
+                            'status' => $result['status'] ?? null,
+                            'products_count' => $this->countPayloadProducts($result['payload']),
+                        ]);
+                    } else {
+                        logger()->warning('WB direct response not ok', [
+                            'query' => $query,
+                            'playwright_node' => 'local',
+                            'proxy_id' => 'no-proxy',
+                            'status' => $result['status'] ?? null,
+                            'error' => $result['error'] ?? null,
+                        ]);
+                    }
                 }
             }
         } else {
@@ -279,7 +348,7 @@ class WbSearchService
             logger()->warning('WB search returned no products', [
                 'query' => $query,
                 'url' => $url,
-                'status' => $response->status(),
+                'status' => $response?->status(),
             ]);
         }
         Cache::put($cacheKey, $results, now()->addMinutes(10));
@@ -295,6 +364,62 @@ class WbSearchService
         }
         $parts = array_map('trim', explode(',', $value));
         return array_values(array_filter($parts));
+    }
+
+    protected function parseConfiguredProxyPool(mixed $value): array
+    {
+        if (is_string($value)) {
+            $value = $this->parseProxyList($value);
+        }
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach (array_values($value) as $index => $item) {
+            $id = 'proxy-'.str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT);
+            $url = '';
+
+            if (is_array($item)) {
+                $id = (string) ($item['id'] ?? $id);
+                $url = (string) ($item['url'] ?? '');
+            } else {
+                $url = (string) $item;
+            }
+
+            $url = $this->normalizeProxyUrl($url);
+            if ($url === '') {
+                continue;
+            }
+
+            $items[] = [
+                'id' => $id,
+                'url' => $url,
+            ];
+        }
+
+        return $items;
+    }
+
+    protected function normalizeProxyUrl(string $proxy): string
+    {
+        $proxy = trim($proxy);
+        if ($proxy === '') {
+            return '';
+        }
+        if (str_contains($proxy, '://')) {
+            return $proxy;
+        }
+        if (str_contains($proxy, '@')) {
+            [$host, $auth] = explode('@', $proxy, 2);
+            return 'http://'.$auth.'@'.$host;
+        }
+        return 'http://'.$proxy;
+    }
+
+    protected function maskProxyUrl(string $proxy): string
+    {
+        return preg_replace('#//([^:@/]+):([^@/]+)@#', '//***:***@', $proxy) ?? $proxy;
     }
 
     protected function buildProxyCandidates(
@@ -358,6 +483,13 @@ class WbSearchService
             $ports = array_values(array_unique($ports));
         }
         return $ports;
+    }
+
+    protected function countPayloadProducts(array $payload): int
+    {
+        $products = $payload['data']['products'] ?? $payload['products'] ?? null;
+
+        return is_array($products) ? count($products) : 0;
     }
 
     protected function logFirstProduct(string $query, array $payload): void
